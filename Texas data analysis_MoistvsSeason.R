@@ -253,7 +253,7 @@ summary(stress.model.nofun.moist) #
 
 stress_sum_noout <- stress_sum %>%  filter (relabun < 3)
 stress.model.nofun.season.noout <- lm(relabun~MAP.std* SamplingPt, stress_sum_noout)
-summary(stress.model.nofun.season.noout) # still there !!!!!
+summary(stress.model.nofun.season.noout) # marg
 emmeans(stress.model.nofun.season.noout, pairwise ~SamplingPt)
 # hmmm but nothing pairwisse .... 
 ggplot(stress.model.nofun.season.noout, aes(x = SamplingPt, y = relabun)) + 
@@ -311,7 +311,7 @@ summary.manylm(manylm_stress_season) # this says nothing matters
 
 summary.manylm(manylm_stress_season, p.uni="adjusted", nBoot = 9999, rep.seed = T)
 # Hooper's R-squared: 0.05793
-# nothing matters 
+# nothing matters, not even close.
 
 
 
@@ -404,11 +404,11 @@ resource_plot #
 hist(resource_sum$relabun) #this is good
 
 resource.model.nofun.season <- lm(relabun~MAP.std*SamplingPt, resource_sum)
-summary(resource.model.nofun.season) # MAP marg sig 
+summary(resource.model.nofun.season) # nothinig.
 # R2 0.08793
 
 resource.model.nofun.moist <- lm(relabun~MAP.std*PercMoist.std, resource_sum)
-summary(resource.model.nofun.moist) # MAP*moist interaction
+summary(resource.model.nofun.moist) # MAP*moist interaction!
 # R2 0.2137
 
 interactions::interact_plot(model = resource.model.nofun.moist, 
@@ -422,6 +422,30 @@ ggplot(resource_sum, aes (x = PercMoist , y= relabun, color = as.character(MAP))
   geom_line() +
   geom_point() +
   scale_color_manual(values = rev(MAPcolors)) + 
+  ylab("Rel. abun of resource genes") + 
+  xlab("Soil Moisture (%)") + 
+  theme_classic(base_size = 20) 
+
+ggplot(resource_sum, aes (x = PercMoist , y= relabun, color = as.character(MAP)))  + 
+  geom_smooth(method = lm, se = F) + # not sure it's appropriate to draw line through 
+  geom_point() +
+  scale_color_manual(values = rev(MAPcolors)) + 
+  ylab("Rel. abun of resource genes") + 
+  xlab("Soil Moisture (%)") + 
+  theme_classic(base_size = 20) 
+
+
+resource_sum_wetdry <-resource_sum  %>% ungroup(.) %>% mutate(wetdry_MAP = case_when(
+  resource_sum$MAP <= 600 ~ "Dry", 
+  resource_sum$MAP > 600 & resource_sum$MAP < 800 ~ "Mid", 
+  resource_sum$MAP >= 800 ~ "Wet"
+))
+
+
+ggplot(resource_sum_wetdry, aes (x = PercMoist , y= relabun, color = wetdry_MAP))  + 
+  geom_smooth(method = lm) + # not sure it's appropriate to draw line through 
+  geom_point() +
+  scale_color_manual(values = c("#F04105FF", "#E9B41FFF",  "#3B99B1FF")) + 
   ylab("Rel. abun of resource genes") + 
   xlab("Soil Moisture (%)") + 
   theme_classic(base_size = 20) 
@@ -453,7 +477,7 @@ resource_sum_fun_wide <- resource_sum_fun_onlyabundantlabel %>%
   select(-c(microtrait_trait.name1)) %>%
   pivot_wider( names_from = label, values_from = relabun , values_fill = 0)
 names(resource_sum_fun_wide)
-
+names(resource_sum_fun_wide[,10:22])
 
 # maybe do not do it this way, since the overall model nothing was sig here. 
 manylm_resource_season <- manylm(as.matrix(resource_sum_fun_wide[,10:22]) ~ 
@@ -463,16 +487,12 @@ summary.manylm(manylm_resource_season, p.uni="adjusted", nBoot = 9999 , rep.seed
 # Vitamin transport, Complex Carbohydrate Depolymerizatio - nope ......
 # Marg Carboxylate Transport MAP*season
 
-
 manylm_resource_moist <- manylm(as.matrix(resource_sum_fun_wide[,10:22]) ~ 
                                    MAP.std*PercMoist, data = resource_sum_fun_wide)
 summary(manylm_resource_moist)
 summary.manylm(manylm_resource_moist, p.uni="adjusted", nBoot = 9999 , rep.seed = T) 
 # MAP: Free Amino Acids Transport  , Carbohydrate Transport marg
 # same for MAP*moist.
-
-
-
 
 # free amino acid transport - MAPxMoist (no samplingPt) 
 # carbohydrate transport - MAPxMoist (no samplingPt) 
@@ -548,17 +568,35 @@ resource_fun_plot_moistcol_haszeroes <- ggplot( data= subset(resource_sum_fun_ba
   ylab("Relative Abundance ") + 
   theme_classic() + 
   theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) + 
+  facet_wrap(~factor(label))
   #theme(legend.position = "none") + 
-  facet_wrap( ~factor(label,
-                      levels = c(
-                                 "Carbohydrate Transport",
+  #facet_wrap( ~factor(label,
+   #                   levels = c(
+   #                              "Carbohydrate Transport",
                                  
-                                 "Free Amino Acids Transport")), scales = "free_y" ) # not - nodif between sampling points!
+   #                              "Free Amino Acids Transport")), scales = "free_y" ) # not - nodif between sampling points!
 
 resource_fun_plot_moistcol_haszeroes
 
 #ggsave("ResourceFunctions_KEGGmicrotrait_moistcol_11024_all.png", plot = resource_fun_plot_moistcol_haszeroes, device = "png",
 #      width = 6, height = 4.8, dpi = 300)
+
+
+resource_fun_plot_moistcol_haszeroes <- ggplot( data= resource_sum_fun_backtolong,
+                                                aes(x=MAP, y=relabun, 
+                                                      colour = PercMoist)) + # higher with higher MAP early on!
+  #stat_summary(fun.y = "mean", geom = "point") +
+  geom_point( size = 2) + 
+  xlab("MAP") + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  ylab("Relative Abundance ") + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) + 
+  facet_wrap(~factor(label), scales = "free")
+
+resource_fun_plot_moistcol_haszeroes
+
+
 
 
 
