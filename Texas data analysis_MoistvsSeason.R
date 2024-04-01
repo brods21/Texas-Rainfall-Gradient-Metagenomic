@@ -663,9 +663,23 @@ dim(both_funs_co2)
 names(both_funs_co2)
 dim(categories_matrix)
 
+
+# first off: does it vary by gradient
+co2_gradient_season <- lm(CO2_AVG~MAP.std  *SamplingPt, data = both_funs_co2)
+summary(co2_gradient_season)  # yes varies by gradient and sampling point, no interaction. 
+
+co2_gradient_season <- lm(CO2_AVG~MAP.std  *SamplingPt, data = both_funs_co2)
+summary(co2_gradient_season)  # yes varies by gradient and sampling point, no interaction. 
+
+co2_gradient_moist <- lm(CO2_AVG~MAP.std  *PercMoist.std, data = both_funs_co2)
+summary(co2_gradient_moist)  # yes varies by gradient but not sampling point, no interaction. 
+
+# now linking genes and function!
+
 # make gene cats matrix - same as before but making sure in same order ....
 genecats_co2 <- both_funs_co2  %>% select (`Stress Tolerance`:`Vitamin Transport`) %>% as.matrix()
 dim (genecats_co2) # 55
+
 
 co2predict_MAP <- lm.rrpp(CO2_AVG~MAP.std +SamplingPt + PercMoist.std,  # R2  = 0.16
                           data = both_funs_co2, print.progress = FALSE, SS.type = "III",
@@ -767,8 +781,12 @@ both_funs_enz_noout$total = log(
 names(both_funs_enz_noout)
 
 
-summary(lm(total~MAP.std*PercMoist.std*SamplingPt, both_funs_enz_noout))
-  # percent moisture matters!!!!!!!!!!! but MAP does not.....
+# first off: does it vary across the gradient.
+enz_gradient_season <- lm(total~MAP.std +SamplingPt, both_funs_enz_noout)
+summary(enz_gradient_season) # marg sig effect of MAP, highly sig if take out interaction. 
+
+enz_gradient_moist <- lm(total~MAP.std *PercMoist.std, both_funs_enz_noout)
+summary(enz_gradient_moist) # MAP and Moist both sig, no interaction. 
 
 
 # with total enzyme abundance as response variable. 
@@ -789,7 +807,7 @@ summary(enz_predict_genecats) # p=0.006, R2 = 0.604 #still sig (p=0.009) if remo
 summary(enz_predict_genecats_MAP) # p=0.004, R2 = 0.638
 # this suggests including genes good
 
-anova(enz_predict_MAP, type = "III") # map signnificant
+anova(enz_predict_MAP, type = "III") # map significant
 anova(enz_predict_genecats, type = "III") # genes significant , even without 
 anova(enz_predict_genecats_MAP, type = "III") # matrix significant , moreso than MAP
 
