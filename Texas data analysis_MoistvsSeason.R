@@ -242,6 +242,17 @@ ggplot(stress.model.nofun.season, aes(x = SamplingPt, y = relabun)) +
   geom_boxplot() # BREECO MAP 850 might be driving this. in fall
 
 
+stresss_boxplot_season <- ggplot(stress.model.nofun.season, aes(x = SamplingPt, y = relabun)) + 
+  geom_boxplot()  + 
+  ylab("Percent stress tolerance genes") +  
+  theme_classic()
+
+stresss_boxplot_season 
+
+#ggsave("Stress_boxplot season.png", plot = stresss_boxplot_season, device = "png",
+#   width = 3.5, height = 3.5, dpi = 300)
+
+
 # follow up if sampling point sig: 
 stress.model.nofun.moist <- lm(relabun~ MAP.std*PercMoist.std, stress_sum)
 summary(stress.model.nofun.moist) # 
@@ -307,7 +318,7 @@ manylm_stress_season <- manylm(as.matrix(stress_sum_fun_wide[,10:14]) ~
                           MAP.std*SamplingPt, data = stress_sum_fun_wide)
 manylm_stress_season
 #plot(manylm_stress)
-summary.manylm(manylm_stress_season) # this says nothing matters
+summary.manylm(manylm_stress_season, nBoot = 9999 , rep.seed = T) # this says nothing matters
 
 summary.manylm(manylm_stress_season, p.uni="adjusted", nBoot = 9999, rep.seed = T)
 # Hooper's R-squared: 0.05793
@@ -319,7 +330,7 @@ manylm_stress_moist <- manylm(as.matrix(stress_sum_fun_wide[,10:14]) ~
                                  MAP.std*PercMoist.std, data = stress_sum_fun_wide)
 manylm_stress_moist
 #plot(manylm_stress)
-summary.manylm(manylm_stress_moist) # nothing 
+summary.manylm(manylm_stress_moist, nBoot = 9999 , rep.seed = T) # nothing 
 summary.manylm(manylm_stress_moist, p.uni="adjusted", nBoot = 9999, rep.seed = T)
 # Hooper's R-squared: 0.06589 
 
@@ -344,22 +355,21 @@ stress_fun_plot_moistcol <- ggplot( data= stress_sum_fun_backtolong #, subset(st
                                     , aes(x=MAP, y=relabun, 
                                           color = PercMoist)) + # higher with higher MAP early on!
   #stat_summary(fun.y = "mean", geom = "point") +
+  geom_smooth(method = "lm", color = "grey", linetype = "dashed") +
   geom_point( size = 2) + 
-  #geom_smooth(method = "lm") +
-  #stat_smooth(method = "lm", formula = y ~ poly(x, 2), size = 1) + 
   xlab("MAP") + 
   paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
   ylab("Relative Abundance ") + 
-  theme_classic(base_size = 13) + 
+  theme_classic(base_size = 12) + 
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
   #theme(legend.position = "none") + 
   #facet_grid(rows =vars(SamplingPt), cols =vars(label ))
-  facet_wrap(~label , nrow = 2)
+  facet_wrap(~label , nrow = 2, scales= "fixed")
 
 stress_fun_plot_moistcol
 
-#ggsave("StressFunctions_KEGGmicrotrait_moistcol_11024.png", plot = stress_fun_plot_moistcol, device = "png",
-#      width = 9, height = 5, dpi = 300)
+ggsave("StressFunctions_KEGGmicrotrait_moistcol_3-24.png", plot = stress_fun_plot_moistcol, device = "png",
+      width = 8, height = 5, dpi = 300)
 
 
 
@@ -374,14 +384,7 @@ stress_fun_plot_moistcol
 summary(lm (relabun~pH.std*SamplingPt, resource_sum)) # nothing honey
 summary(lm (relabun~pH.std, resource_sum)) # 0.0591, R2 = 0.046
 
-resource_plot <- ggplot(resource_sum, aes(x=MAP, y=relabun)) + # higher with higher MAP early on!
-  geom_point() + 
-  #stat_summary(fun.y = "sum", geom = "point") +
-  #stat_smooth(method = "lm", formula = y ~ poly(x, 2), size = 1) + 
-  #geom_smooth(method = "lm") +
-  theme_classic() + 
-  ylab("Percent of total genes") + 
-  facet_grid(~SamplingPt , scales="free")
+
 
 
 resource_plot <- ggplot(resource_sum, aes(x=MAP, y=relabun)) + # higher with higher MAP early on!
@@ -399,6 +402,21 @@ resource_plot #
 
 #ggsave("Resource_microtrait_MAP_1102024.png", plot = resource_plot , device = "png",
 #      width = 8, height = 3.2, dpi = 300)
+
+
+resource_plot_mapxmoist_a <- ggplot(resource_sum, aes(x=MAP, y=relabun, col = PercMoist)) + 
+  #stat_summary(fun.y = "mean", geom = "point") +
+  geom_point() + 
+  #stat_smooth(method = "lm", formula = y ~ poly(x, 2), size = 1) + 
+  #geom_smooth(data = subset (resource_sum, SamplingPt=="Spring 2016"), method = "lm", color = "grey20") +
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  theme_classic(base_size = 13) +  # changed from theme_clean on 1-10-24
+  theme (axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Percent resource acquisition genes") + 
+  xlab("MAP")
+
+#ggsave("Resource_microtrait_MAPxMoist_A.png", plot = resource_plot_mapxmoist_a , device = "png",
+#      width = 4.5, height = 4, dpi = 300)
 
 
 hist(resource_sum$relabun) #this is good
@@ -435,20 +453,86 @@ ggplot(resource_sum, aes (x = PercMoist , y= relabun, color = as.character(MAP))
   theme_classic(base_size = 20) 
 
 
+
+# STATS and FIGURE for how MOIST relationship changes with MAP category?
+
+
+# make df
 resource_sum_wetdry <-resource_sum  %>% ungroup(.) %>% mutate(wetdry_MAP = case_when(
   resource_sum$MAP <= 600 ~ "Dry", 
   resource_sum$MAP > 600 & resource_sum$MAP < 800 ~ "Mid", 
   resource_sum$MAP >= 800 ~ "Wet"
 ))
 
+# stats
 
-ggplot(resource_sum_wetdry, aes (x = PercMoist , y= relabun, color = wetdry_MAP))  + 
-  geom_smooth(method = lm) + # not sure it's appropriate to draw line through 
+resource.model.mapcat <- lm(relabun~wetdry_MAP*PercMoist.std, resource_sum_wetdry)
+summary(resource.model.mapcat) # yes this is sig!
+joint_tests(resource.model.mapcat, by= "wetdry_MAP") # only sig for dry??? 
+
+# figure - lines for each MAP category
+resource_plot_mapxmoist_b<- ggplot(resource_sum_wetdry, aes (x = PercMoist , y= relabun, color = wetdry_MAP, linetype = wetdry_MAP))  + 
+  geom_smooth(data = subset (resource_sum_wetdry, wetdry_MAP == "Dry"), 
+              method = lm, linetype = "solid") + # line and SE cuz sig
+  geom_smooth(data = subset (resource_sum_wetdry, wetdry_MAP != "Dry"), 
+              method = lm, se = F ,linetype = "dashed") + # no line and no se,
   geom_point() +
   scale_color_manual(values = c("#F04105FF", "#E9B41FFF",  "#3B99B1FF")) + 
-  ylab("Rel. abun of resource genes") + 
-  xlab("Soil Moisture (%)") + 
-  theme_classic(base_size = 20) 
+  scale_linetype_manual(values = c("solid", "dashed", "dashed")) + 
+  theme_classic(base_size = 12) +
+  theme (axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Percent resource acquisition genes") + 
+  xlab("Soil Moisture (%)") 
+  
+ 
+
+#ggsave("Resource_microtrait_MAPxMoist_C.png", plot = resource_plot_mapxmoist_b , device = "png",
+#      width = 5, height = 4, dpi = 300)
+
+
+
+# make df
+
+hist(resource_sum$PercMoist)
+resource_sum_wetdrycurrent <-resource_sum  %>% ungroup(.) %>% mutate(wetdry_moist = case_when(
+  resource_sum$PercMoist <= 10 ~ "Dry", 
+  resource_sum$PercMoist > 10 & resource_sum$PercMoist < 20 ~ "Mid", 
+  resource_sum$PercMoist >= 20 ~ "Wet"
+))
+
+
+resource.model.moistcat <- lm(relabun~MAP.std*wetdry_moist, resource_sum_wetdrycurrent)
+summary(resource.model.moistcat) # MAP, interaction sig.
+joint_tests(resource.model.moistcat, by= "wetdry_moist") # only sig for dry??? 
+# MAP only matters when it is currently dry, is the other interpretation??????????
+
+
+# maybe resource figure could be:
+# 1: MAP-abundance, colored by percmoist
+  # then MAP categories : ie most sensitive at dry site
+  # then moist categories: ie legacy matters when dry. these both work!!
+
+
+
+# figure - lines for each MAP category
+resource_plot_mapxmoist_c <- ggplot(resource_sum_wetdrycurrent, aes (x = MAP , y= relabun, color = wetdry_moist, linetype = wetdry_moist))  + 
+  geom_point() +
+  geom_smooth(data = subset (resource_sum_wetdrycurrent, wetdry_moist == "Dry"), 
+              method = lm, linetype = "solid") + # line and SE cuz sig
+  geom_smooth(data = subset (resource_sum_wetdrycurrent, wetdry_moist != "Dry"), 
+              method = lm, se = F ,linetype = "dashed") + # no line and no se,
+  scale_color_manual(values = c("#F04105FF", "#E9B41FFF",  "#3B99B1FF")) + 
+  scale_linetype_manual(values = c("solid", "dashed", "dashed")) + 
+  theme_classic(base_size = 12) +
+  theme (axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Percent resource acquisition genes") + 
+  xlab("MAP")
+ # theme_classic(base_size = 20) 
+
+
+ # ggsave("Resource_microtrait_MAPxMoist_D.png", plot = resource_plot_mapxmoist_c , device = "png",
+ #        width = 5, height = 4, dpi = 300)
+
 
 
 
@@ -482,14 +566,17 @@ names(resource_sum_fun_wide[,10:22])
 # maybe do not do it this way, since the overall model nothing was sig here. 
 manylm_resource_season <- manylm(as.matrix(resource_sum_fun_wide[,10:22]) ~ 
                             MAP.std*SamplingPt, data = resource_sum_fun_wide)
-summary(manylm_resource_season)
+summary(manylm_resource_season, nBoot = 9999 , rep.seed = T)
 summary.manylm(manylm_resource_season, p.uni="adjusted", nBoot = 9999 , rep.seed = T) 
 # Vitamin transport, Complex Carbohydrate Depolymerizatio - nope ......
 # Marg Carboxylate Transport MAP*season
 
+
+
+# these are the results I will show. 
 manylm_resource_moist <- manylm(as.matrix(resource_sum_fun_wide[,10:22]) ~ 
                                    MAP.std*PercMoist, data = resource_sum_fun_wide)
-summary(manylm_resource_moist)
+summary(manylm_resource_moist, nBoot = 9999 , rep.seed = T)
 summary.manylm(manylm_resource_moist, p.uni="adjusted", nBoot = 9999 , rep.seed = T) 
 # MAP: Free Amino Acids Transport  , Carbohydrate Transport marg
 # same for MAP*moist.
@@ -554,7 +641,7 @@ resource_sum_fun_backtolong <- resource_sum_fun_wide %>%
                 values_to = "relabun")
 
 
-resource_fun_plot_moistcol_haszeroes <- ggplot( data= subset(resource_sum_fun_backtolong, 
+resource_fun_plot_moistcol_haszeroes_sel <- ggplot( data= subset(resource_sum_fun_backtolong, 
                                                              
                                                                ( label =="Carbohydrate Transport" ) |
                                                                
@@ -576,26 +663,33 @@ resource_fun_plot_moistcol_haszeroes <- ggplot( data= subset(resource_sum_fun_ba
                                  
    #                              "Free Amino Acids Transport")), scales = "free_y" ) # not - nodif between sampling points!
 
-resource_fun_plot_moistcol_haszeroes
+resource_fun_plot_moistcol_haszeroes_se;
 
-#ggsave("ResourceFunctions_KEGGmicrotrait_moistcol_11024_all.png", plot = resource_fun_plot_moistcol_haszeroes, device = "png",
+#ggsave("ResourceFunctions_KEGGmicrotrait_moistcol_11024_all.png", plot = resource_fun_plot_moistcol_haszeroes_sel, device = "png",
 #      width = 6, height = 4.8, dpi = 300)
 
 
 resource_fun_plot_moistcol_haszeroes <- ggplot( data= resource_sum_fun_backtolong,
-                                                aes(x=MAP, y=relabun, 
-                                                      colour = PercMoist)) + # higher with higher MAP early on!
-  #stat_summary(fun.y = "mean", geom = "point") +
-  geom_point( size = 2) + 
+                                                aes(x=MAP, y=relabun )) + # higher with higher MAP early on!
+  geom_point( size = 2, aes ( colour = PercMoist)) + 
+  geom_smooth(data = subset (resource_sum_fun_backtolong, label =="Free Amino Acids Transport"), 
+              method = lm, linetype = "solid", color = "black") + # line and SE cuz sig
+  geom_smooth(data = subset (resource_sum_fun_backtolong, label =="Carbohydrate Transport"), 
+              method = lm, linetype = "solid", color = "black") + # line and SE cuz sig
+  geom_smooth(data = subset (resource_sum_fun_backtolong, label !="Carbohydrate Transport" & 
+                               label  != "Free Amino Acids Transport"), 
+              method = lm, linetype = "dashed", color = "grey") + # line and SE cuz sig
   xlab("MAP") + 
   paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
   ylab("Relative Abundance ") + 
-  theme_classic() + 
+  theme_classic(base_size = 9) + 
   theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) + 
-  facet_wrap(~factor(label), scales = "free")
+  facet_wrap(~factor(label), scales = "free_y")
 
 resource_fun_plot_moistcol_haszeroes
 
+ggsave("ResourceFunctions_KEGGmicrotrait_moistcol_3_24_all.png", plot = resource_fun_plot_moistcol_haszeroes, device = "png",
+      width = 8, height = 7, dpi = 300)
 
 
 
