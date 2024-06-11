@@ -16,6 +16,7 @@ library(tidyverse)
 library(broom)
 library(terra)
 library(paletteer)
+library(svglite)
 shape <- readOGR(dsn = "~/Downloads/GouldEcoRegions", layer = "GouldEcoRegions") # this takes a long time to load in
 setwd("~/Documents/Texas gradient")
 class(shape)
@@ -71,7 +72,8 @@ text(points$Long, points$Lat-0.1, labels = points$SiteCode, cex = 0.3)
 # want edwards region to be black
 # want sampling locations as dots 
 
-png("TXgraph.png", units="in", width=5, height=5, res=300)
+#png("TXgraph.png", units="in", width=5, height=5, res=300)
+svglite("Figure 1a.svg",  width=5, height=5)
 plot(shape.longlat , border="grey80")
 plot(shape.edwards.longlat , border = "black", add = TRUE)
 points(x = points$Lon, y= points$Lat, pch=19, cex = 0.3)
@@ -155,8 +157,12 @@ PDSI = ggplot(drought, aes(x=Year, y=PDSI)) +
 
 PDSI 
 
-ggsave("TX_PDSI_11624.png", plot = PDSI, device = "png",
-    width = 7, height = 4.8, dpi = 300)
+#ggsave("TX_PDSI_11624.png", plot = PDSI, device = "png",
+ #   width = 7, height = 4.8, dpi = 300)
+
+svglite("Figure 1b.svg",  width=7, height=4.8)
+PDSI
+dev.off()
 
 
 
