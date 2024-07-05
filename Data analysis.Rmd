@@ -1,0 +1,1021 @@
+---
+title: "Texas data analysis"
+output: html_document
+date: "2024-06-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown for Broderick et al. 2024, "Long-term climate creates functional legacies by altering microbial traits"
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r packages and data, echo=TRUE}
+
+rm(list=ls())
+
+library(mvabund)
+library(tidyverse)
+library(lme4)
+library(emmeans)
+library(vegan)
+library(ggrepel)
+library(gridExtra)
+library(lterpalettefinder)
+library(visreg)
+library(car)
+library(dplyr)
+library(ggthemes)
+library(RRPP) 
+library(svglite)
+library(paletteer)
+
+
+# picked from the paletteer palette : grDevices::Zissou 1
+MAPcolors <- c("#3B99B1FF",  "#35A4ABFF", "#3BA8A7FF", "#48AEA2FF", "#81BB95FF",
+               "#A2C194FF","#B3C58FFF", "#CBC988FF",  "#EAC728FF", "#E9B41FFF" ,
+               "#E9AB1CFF", "#E79C15FF",  "#E78D08FF" , "#E78200FF", "#E87600FF" , 
+               "#EA6800FF" , "#EC5C00FF" , "#F04105FF", "#F5191CFF")
+
+
+# read in data
+#setwd("~/Documents/Texas gradient")
+data_counts_withtotal <- read.csv( "Texas gene abundances.csv")
+trt <- read.csv("Texas_Metadata.csv")
+timedata <- read.csv("Site_TimeData.csv")
+
+enzymes <- read.csv("Extracellular enzyme data.csv")
+co2 <- read.csv("CO2 flux data.csv")
+
+
+```
+
+### Formatting data for later use
+
+make wide-format site x "species" matrix for ordinations,
+subset data for stress and resource categories.
+
+```{r format, echo =TRUE}
+
+# subest with only cols im interested in for sitexsp matrix
+data_counts_withtotal_sel <-  data_counts_withtotal %>% 
+  select(c(sample, MAP, PercMoist, MAP.std, PercMoist.std, PercClay.std, PercC.std, PercN.std, pH.std, Site, SamplingPt, KO, relabun ))
+str(data_counts_withtotal_sel$KO)
+str(data_counts_withtotal_sel$relabun)
+sitexsp_wmeta <- data_counts_withtotal_sel  %>%  pivot_wider(names_from = KO, values_from = relabun ,values_fill = 0)
+
+sitexsp <- sitexsp_wmeta[,12:3039]   # site by "species" matrix for ordinations etc
+coldata <- sitexsp_wmeta[,1:11]# this is site metadata
+rownames(coldata) <- sitexsp_wmeta$sample
+
+#######################################
+# Make data frames for stress and resource and both
+  # both overall and fun
+#######################################
+
+# stress: 
+stress <- data_counts_withtotal  %>% filter(YAS == "Stress Tolerance")
+
+stress$label <- str_to_title (sub('.*Specific:', '', stress$microtrait_trait.name1) ) 
+table (stress$label )
+sum(stress$counts) 
+stress_sum <- stress %>%  # sum over all subcategories 
+  group_by(sample, MAP, Site, SamplingPt, PercMoist,
+           MAP.std, PercMoist.std, MBC.std, DOC.std, PercN.std, pH.std) %>% 
+  dplyr::summarise(relabun = sum(relabun))
+
+stress_sum_fun <- stress %>%  # sum for each sub-category
+  group_by(sample, MAP, MAP.std, PercMoist, PercMoist.std, MBC.std, DOC.std, SamplingPt, microtrait_trait.name1,label, Site) %>% 
+  dplyr::summarise(relabun = sum(relabun)) # this low cat of ox lim will be removed anyway,,,
+
+# resource 
+resource <- data_counts_withtotal  %>% filter(YAS == "Resource Acquisition")
+resource$label <- as.character (str_to_title (sub('.*:.*:', '', resource$microtrait_trait.name1) ) )
+
+resource_sum <- resource %>%  # sum over all subcategories 
+  group_by(sample, MAP, SamplingPt, Site, PercMoist, 
+           MAP.std, PercMoist.std, MBC.std, DOC.std, PercN.std, pH.std) %>% 
+  dplyr::summarise(relabun = sum(relabun))
+
+resource_sum_fun <- resource %>%  # sum for each sub-category
+  group_by(sample, MAP,  MAP.std, PercMoist, PercMoist.std, MBC.std, DOC.std, SamplingPt, microtrait_trait.name1,label, Site) %>% 
+  dplyr::summarise(relabun = sum(relabun))
+
+# both together
+names(stress_sum_fun)
+names(resource_sum_fun)
+both_sum_fun <- rbind (stress_sum_fun, resource_sum_fun )
+#MOVED TO bELOW to include the zeroes counts !!!!!!!!!!!!!!!!!!
+# do the same for supplemental  stress counts ..... 
+
+# make this wide
+57*.9 # in at least 90% of samples 
+tt <- table(both_sum_fun$label)
+both_sum_fun_onlyabundantlabel <- subset(both_sum_fun, label %in% names(tt[tt > 50]))
+
+length(unique(both_sum_fun_onlyabundantlabel$label) ) # 18 total categories
+table(both_sum_fun_onlyabundantlabel$label)
+
+both_sum_fun_wide <- both_sum_fun_onlyabundantlabel %>%  # make wide 
+  ungroup %>% 
+  select(-c(microtrait_trait.name1)) %>%
+  pivot_wider( names_from = label, values_from = relabun , values_fill = 0)
+names(both_sum_fun_wide)
+
+categories_matrix <- both_sum_fun_wide %>%  select(`Stress Tolerance`:`Vitamin Transport`) %>% as.matrix()
+
+```
+
+## environmental models
+```{r env models}
+########################################
+# environmental models
+#######################################
+
+bothmeta <- merge (trt, timedata, by = c ("Site", "SamplingPt"))
+bothmeta2 <- bothmeta
+  # all 60, but remember that there are two sites that have the same MAP !!!
+bothmeta2$MAP.std <- ( bothmeta2$MAP - mean(bothmeta2$MAP) ) / (2 * sd ( bothmeta2$MAP))
+levels(bothmeta$SamplingPt)
+str(bothmeta$SamplingPt)
+# six comparisons.
+percC.mod <- lm(PercC~MAP.std*SamplingPt, bothmeta2) # N/S
+percN.mod <- lm(PercN~MAP.std*SamplingPt, bothmeta2) # N/S
+sand.mod <- lm(PercSand~MAP.std*SamplingPt, bothmeta2) # N/S
+mbc.mod <- lm(MBC_mg_g~MAP.std*SamplingPt, bothmeta2) # SamplingPoint
+#doc.mod <- lm(DOC_mg_g~MAP.std*SamplingPt, bothmeta2) # SamplingPoint
+ph.mod <- lm(pH~MAP.std*SamplingPt, bothmeta2) # MAP significant !! .
+moist.mod <- lm(PercMoist~MAP.std*SamplingPt, bothmeta2) # SamplingPoint
+
+
+# this is fine order of terms does not matter
+  # use this do not use anova
+  # do not change stats tables just adjust alpha to 0.008
+  # these are T and P values for table s2
+summary(moist.mod) 
+summary(percC.mod)
+summary(percN.mod)
+summary(sand.mod)
+summary(mbc.mod)
+#summary(doc.mod) # not bothering including this. 
+summary(ph.mod)
+
+bothmeta2 %>% 
+  group_by( MAP, Site) %>% 
+  summarize(pH = mean (pH),
+            C = mean (PercC),
+            N = mean (PercN), 
+            Sand = mean(PercSand),
+            Clay = mean(PercClay))
+
+
+
+ggplot(data_counts_withtotal, aes( x = MAP, y= PercMoist, group = Site)) + 
+  geom_point() + 
+  facet_grid(~SamplingPt) # relationship between MAP and percmoist
+
+ggplot(data_counts_withtotal, aes( x = SamplingPt, y= MBC_mg_g)) + 
+  geom_boxplot() # sampling point and MBC - high in SPRING
+
+ggplot(data_counts_withtotal, aes( x = SamplingPt, y= DOC_mg_g)) + 
+  geom_boxplot() # sampling point and DOC - high in SUMMER
+
+```
+
+## Stress gene abundance, as a function of MAP, soil moisture, sampling season
+```{r stress}
+
+summary(lm(relabun ~ pH.std*SamplingPt, stress_sum)) # not sig wih pH
+summary(lm(relabun ~ pH.std, stress_sum)) # not sig with pH.
+
+# MAP fig
+stress_plot <- ggplot(stress_sum, aes(x=MAP, y=relabun)) + # higher with higher MAP early on!
+  #stat_summary(fun.y = "mean", geom = "point") +
+  geom_point() + 
+  #stat_smooth(method = "lm", formula = y ~ poly(x, 2), size = 1) + 
+  geom_smooth(method = "lm") +
+  theme_classic() + 
+  ylab("Percent of total genes") + 
+  facet_grid(~SamplingPt , scales="free")
+
+stress_plot
+
+# soil moisture fig
+stress_plot_moist <- ggplot(stress_sum, aes(x=PercMoist, y=relabun)) + # higher with higher MAP early on!
+  #stat_summary(fun.y = "mean", geom = "point") +
+  geom_point() + 
+  #stat_smooth(method = "lm", formula = y ~ poly(x, 2), size = 1) + 
+  geom_smooth(data = subset (stress_sum, SamplingPt=="Fall 2015"), method = "lm", color = "grey20") +
+  #ggthemes::theme_clean() + 
+  theme_classic(base_size = 13) +  # changed from theme_clean on 1-10-24
+  theme (axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Percent stress tolerance genes") + 
+  xlab("Soil moisture (%)") + 
+  facet_grid(~SamplingPt )
+
+stress_plot_moist # 
+
+
+hist(stress_sum$relabun) # normal
+
+stress_sum %>% filter (relabun > 3) # BREECO MAP 850 might be driving this. 
+
+
+
+stress.model.nofun.season <- lm(relabun~MAP.std* SamplingPt, stress_sum)
+summary(stress.model.nofun.season) # season matters, overall R2 0.04771
+emmeans(stress.model.nofun.season, pairwise ~SamplingPt)
+# fall marg sig from spring, sig from summer. 
+ggplot(stress.model.nofun.season, aes(x = SamplingPt, y = relabun)) + 
+  geom_boxplot() # BREECO MAP 850 might be driving this. in fall
+
+
+stress_boxplot_season <- ggplot(stress.model.nofun.season, aes(x = SamplingPt, y = relabun)) + 
+  geom_boxplot()  + 
+  ylab("Percent stress tolerance genes") + 
+  xlab(NULL) +
+  theme_classic()
+
+stress_boxplot_season 
+
+#svglite("Figure 3B.svg" , width = 3.5, height = 3.5)
+#stress_boxplot_season 
+#dev.off()
+
+
+# same model but with moist instead of sampling season
+stress.model.nofun.moist <- lm(relabun~ MAP.std*PercMoist.std, stress_sum)
+summary(stress.model.nofun.moist) # 
+
+# driven by only one site ????
+stress_sum_noout <- stress_sum %>%  filter (relabun < 3)
+stress.model.nofun.season.noout <- lm(relabun~MAP.std* SamplingPt, stress_sum_noout)
+summary(stress.model.nofun.season.noout) # marg
+emmeans(stress.model.nofun.season.noout, pairwise ~SamplingPt)
+# hmmm but nothing pairwisse .... 
+ggplot(stress.model.nofun.season.noout, aes(x = SamplingPt, y = relabun)) + 
+  geom_boxplot() 
+
+stress.model.nofun.moist.noout <- lm(relabun~MAP.std* PercMoist.std , stress_sum_noout)
+summary(stress.model.nofun.moist.noout) 
+  #  marg interaction driven by that one weird point, will not focus on it
+
+
+interactions::interact_plot(model = stress.model.nofun.moist, 
+                            modx = MAP.std, pred = PercMoist.std,
+                            vary.lty = FALSE ,
+                            colors = c("lightblue", "blue", "darkblue"))
+# suggests positive relationship @ high MAP, neg at low MAP?
+
+# this is for percmoist * map marginal interaction 
+ggplot(stress_sum, aes (x = PercMoist , y= relabun, color = as.character(MAP)))  + 
+  geom_line() +
+  geom_point() +
+  scale_color_manual(values = rev(MAPcolors)) + 
+  ylab("Rel. abun of resource genes") + 
+  xlab("Soil Moisture (%)") + 
+  theme_classic(base_size = 20) 
+
+```
+
+### Individual stress categories
+```{r stresscat}
+#######################################
+# Stress line graphs by function 
+#######################################
+
+#### MANYLM in mvabund #############
+
+table(stress_sum_fun$label)
+57*.9
+tt <- table(stress_sum_fun$label)
+stress_sum_fun_onlyabundantlabel <- subset(stress_sum_fun, label %in% names(tt[tt > 50]))
+  # subset so haave to be in 90% of samples!!!!!!!! 
+table(stress_sum_fun_onlyabundantlabel$label)
+
+stress_sum_fun_wide <- stress_sum_fun_onlyabundantlabel %>% 
+  ungroup %>% 
+  select(-c(microtrait_trait.name1)) %>%
+  pivot_wider( names_from = label, values_from = relabun , values_fill = 0)
+
+manylm_stress_season <- manylm(as.matrix(stress_sum_fun_wide[,10:14]) ~ 
+                          MAP.std*SamplingPt, data = stress_sum_fun_wide)
+manylm_stress_season
+summary.manylm(manylm_stress_season, nBoot = 9999 , rep.seed = T) # nothing sig
+
+summary.manylm(manylm_stress_season, p.uni="adjusted", nBoot = 9999, rep.seed = T)
+
+manylm_stress_moist <- manylm(as.matrix(stress_sum_fun_wide[,10:14]) ~ 
+                                 MAP.std*PercMoist.std, data = stress_sum_fun_wide)
+manylm_stress_moist
+summary.manylm(manylm_stress_moist, nBoot = 9999 , rep.seed = T) # nothing 
+summary.manylm(manylm_stress_moist, p.uni="adjusted", nBoot = 9999, rep.seed = T)
+
+# make sure the line graphs include zeroes!!!
+
+stress_sum_fun_backtolong <- stress_sum_fun_wide %>% 
+  pivot_longer( cols = "Stress Tolerance":"Temperature:low" ,
+                names_to = "label",
+                values_to = "relabun")
+
+stress_fun_plot_moistcol <- ggplot( data= stress_sum_fun_backtolong 
+                                    , aes(x=MAP, y=relabun, 
+                                          color = PercMoist)) + # higher with higher MAP early on!
+  geom_smooth(method = "lm", color = "grey", linetype = "dashed") +
+  geom_point( size = 2) + 
+  xlab("MAP") + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  ylab("Relative Abundance ") + 
+  theme_classic(base_size = 12) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  facet_wrap(~label , nrow = 2, scales= "fixed")
+
+stress_fun_plot_moistcol
+```
+
+## Resource gene abundance, as a function of MAP, soil moisture, sampling season
+```{r resource}
+# do pH as a driver. include in supplemental
+summary(lm (relabun~pH.std*SamplingPt, resource_sum)) # not sig
+summary(lm (relabun~pH.std, resource_sum)) # 0.0591, R2 = 0.046
+
+
+resource_plot <- ggplot(resource_sum, aes(x=MAP, y=relabun)) + # higher with higher MAP early on!
+  geom_point() + 
+  geom_smooth(data = subset (resource_sum, SamplingPt=="Spring 2016"), method = "lm", color = "grey20") +
+  theme_classic(base_size = 13) +  # changed from theme_clean on 1-10-24
+  theme (axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Percent resource acquisition genes") + 
+  xlab("MAP") + 
+  facet_grid(~SamplingPt )
+
+resource_plot #
+
+resource_plot_mapxmoist_a <- ggplot(resource_sum, aes(x=MAP, y=relabun, col = PercMoist)) + 
+  geom_point() + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  theme_classic(base_size = 13) +  # changed from theme_clean on 1-10-24
+  theme (axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Percent resource acquisition genes") + 
+  xlab("MAP")
+
+resource_plot_mapxmoist_a 
+
+#svglite("Figure 3A.svg", width = 4.5, height = 4)
+#resource_plot_mapxmoist_a
+#dev.off()
+
+hist(resource_sum$relabun) #normal
+
+resource.model.nofun.season <- lm(relabun~MAP.std*SamplingPt, resource_sum)
+summary(resource.model.nofun.season) 
+# R2 -0.001484 
+
+resource.model.nofun.moist <- lm(relabun~MAP.std*PercMoist.std, resource_sum)
+summary(resource.model.nofun.moist) # MAP*moist interaction
+# R2 0.1692 
+
+interactions::interact_plot(model = resource.model.nofun.moist, 
+                            modx = MAP.std, pred = PercMoist.std,
+                            vary.lty = FALSE ,
+                            colors = c("lightblue", "blue", "darkblue"))
+  # suggests relabun high at high moist low MAP, and vice versa
+
+# this is for percmoist * map interaction 
+ggplot(resource_sum, aes (x = PercMoist , y= relabun, color = as.character(MAP)))  + 
+  geom_line() +
+  geom_point() +
+  scale_color_manual(values = rev(MAPcolors)) + 
+  ylab("Rel. abun of resource genes") + 
+  xlab("Soil Moisture (%)") + 
+  theme_classic(base_size = 20) 
+
+ggplot(resource_sum, aes (x = PercMoist , y= relabun, color = as.character(MAP)))  + 
+  geom_smooth(method = lm, se = F) + # not sure it's appropriate to draw line through 
+  geom_point() +
+  scale_color_manual(values = rev(MAPcolors)) + 
+  ylab("Rel. abun of resource genes") + 
+  xlab("Soil Moisture (%)") + 
+  theme_classic(base_size = 20) 
+
+
+# STATS and FIGURE for how MOIST relationship changes with MAP category?
+
+# make df
+resource_sum_wetdry <-resource_sum  %>% ungroup(.) %>% mutate(wetdry_MAP = case_when(
+  resource_sum$MAP <= 600 ~ "Dry", 
+  resource_sum$MAP > 600 & resource_sum$MAP < 800 ~ "Mid", 
+  resource_sum$MAP >= 800 ~ "Wet"
+))
+
+# stats
+
+resource.model.mapcat <- lm(relabun~wetdry_MAP*PercMoist.std, resource_sum_wetdry)
+summary(resource.model.mapcat) # significant 
+joint_tests(resource.model.mapcat, by= "wetdry_MAP") # only for dry sites
+
+# figure - lines for each MAP category
+resource_plot_mapxmoist_b<- ggplot(resource_sum_wetdry, aes (x = PercMoist , y= relabun, color = wetdry_MAP, linetype = wetdry_MAP))  + 
+  geom_smooth(data = subset (resource_sum_wetdry, wetdry_MAP == "Dry"), 
+              method = lm, linetype = "solid") + # line and SE cuz sig
+  geom_smooth(data = subset (resource_sum_wetdry, wetdry_MAP != "Dry"), 
+              method = lm, se = F ,linetype = "dashed") + # no line and no se,
+  geom_point() +
+  scale_color_manual(values = c("#F04105FF", "#E9B41FFF",  "#3B99B1FF")) + 
+  scale_linetype_manual(values = c("solid", "dashed", "dashed")) + 
+  theme_classic(base_size = 12) +
+  theme (axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Percent resource acquisition genes") + 
+  xlab("Soil Moisture (%)") 
+  
+
+#svglite("Figure 3C.svg", width = 5, height = 4)
+#resource_plot_mapxmoist_b
+#dev.off()
+
+
+# make df
+
+hist(resource_sum$PercMoist)
+resource_sum_wetdrycurrent <-resource_sum  %>% ungroup(.) %>% mutate(wetdry_moist = case_when(
+  resource_sum$PercMoist <= 10 ~ "Dry", 
+  resource_sum$PercMoist > 10 & resource_sum$PercMoist < 20 ~ "Mid", 
+  resource_sum$PercMoist >= 20 ~ "Wet"
+))
+
+
+resource.model.moistcat <- lm(relabun~MAP.std*wetdry_moist, resource_sum_wetdrycurrent)
+summary(resource.model.moistcat) # MAP, interaction sig.
+joint_tests(resource.model.moistcat, by= "wetdry_moist") # only for dry conditions 
+
+
+
+# figure - lines for each MAP category
+resource_plot_mapxmoist_c <- ggplot(resource_sum_wetdrycurrent, aes (x = MAP , y= relabun, color = wetdry_moist, linetype = wetdry_moist))  + 
+  geom_point() +
+  geom_smooth(data = subset (resource_sum_wetdrycurrent, wetdry_moist == "Dry"), 
+              method = lm, linetype = "solid") + # line and SE cuz sig
+  geom_smooth(data = subset (resource_sum_wetdrycurrent, wetdry_moist != "Dry"), 
+              method = lm, se = F ,linetype = "dashed") + # no line and no se,
+  scale_color_manual(values = c("#F04105FF", "#E9B41FFF",  "#3B99B1FF")) + 
+  scale_linetype_manual(values = c("solid", "dashed", "dashed")) + 
+  theme_classic(base_size = 12) +
+  theme (axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Percent resource acquisition genes") + 
+  xlab("MAP")
+
+#svglite("Figure 3D.svg", width = 5, height = 4)
+#resource_plot_mapxmoist_c
+#dev.off()
+
+```
+
+### Individual resource categories
+```{r resourcecat}
+#### MANYLM in mvabund #############
+
+length(unique(resource_sum_fun$label) )
+table(resource_sum_fun$label)
+57*.9
+tt <- table(resource_sum_fun$label)
+resource_sum_fun_onlyabundantlabel <- subset(resource_sum_fun, label %in% names(tt[tt > 50]))
+
+length(unique(resource_sum_fun_onlyabundantlabel$label) )
+table(resource_sum_fun_onlyabundantlabel$label)
+
+resource_sum_fun_wide <- resource_sum_fun_onlyabundantlabel %>% 
+  ungroup %>% 
+  select(-c(microtrait_trait.name1)) %>%
+  pivot_wider( names_from = label, values_from = relabun , values_fill = 0)
+names(resource_sum_fun_wide)
+names(resource_sum_fun_wide[,10:22])
+
+# by season
+manylm_resource_season <- manylm(as.matrix(resource_sum_fun_wide[,10:22]) ~ 
+                            MAP.std*SamplingPt, data = resource_sum_fun_wide)
+summary(manylm_resource_season, nBoot = 9999 , rep.seed = T)
+summary.manylm(manylm_resource_season, p.uni="adjusted", nBoot = 9999 , rep.seed = T) 
+
+
+# by soil moisture
+manylm_resource_moist <- manylm(as.matrix(resource_sum_fun_wide[,10:22]) ~ 
+                                   MAP.std*PercMoist, data = resource_sum_fun_wide)
+summary(manylm_resource_moist, nBoot = 9999 , rep.seed = T)
+summary.manylm(manylm_resource_moist, p.uni="adjusted", nBoot = 9999 , rep.seed = T) 
+
+
+
+names ( resource_sum_fun_wide)
+resource_sum_fun_backtolong <- resource_sum_fun_wide %>% 
+  pivot_longer( cols = "Resource Acquisition":"Vitamin Transport" ,
+                names_to = "label",
+                values_to = "relabun")
+
+
+
+resource_fun_plot_moistcol_haszeroes <- ggplot( data= resource_sum_fun_backtolong,
+                                                aes(x=MAP, y=relabun )) + # higher with higher MAP early on!
+  geom_point( size = 2, aes ( colour = PercMoist)) + 
+  geom_smooth(data = subset (resource_sum_fun_backtolong, label =="Free Amino Acids Transport"), 
+              method = lm, linetype = "solid", color = "black") + # line and SE cuz sig
+  geom_smooth(data = subset (resource_sum_fun_backtolong, label =="Carbohydrate Transport"), 
+              method = lm, linetype = "dashed", color = "grey") + # line and SE cuz sig
+ # geom_smooth(data = subset (resource_sum_fun_backtolong, label !="Carbohydrate Transport" & 
+   #                            label  != "Free Amino Acids Transport"), 
+   #           method = lm, linetype = "dashed", color = "grey") + # line and SE cuz sig
+  xlab("MAP") + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  ylab("Relative Abundance ") + 
+  theme_classic(base_size = 9) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) + 
+  facet_wrap(~factor(label), scales = "free_y")
+
+resource_fun_plot_moistcol_haszeroes
+
+
+#svglite("Figure 4.svg", width = 8, height = 7)
+#resource_fun_plot_moistcol_haszeroes
+#dev.off()
+
+```
+# Functional data: CO2 flux 
+```{r}
+########################################################################
+# stress and resource categories as predictors of CO2
+########################################################################
+
+names(both_sum_fun_wide)
+dim(both_sum_fun_wide)
+both_funs_co2  <- merge (both_sum_fun_wide, co2, by = c( "Site", "SamplingPt"))
+dim(both_funs_co2)
+names(both_funs_co2)
+dim(categories_matrix)
+
+
+# first off: does CO2 flux vary across gradient
+co2_gradient_season <- lm(CO2_AVG~MAP.std  *SamplingPt, data = both_funs_co2)
+summary(co2_gradient_season)  # yes varies by gradient and sampling point, no interaction. 
+
+co2_gradient_season <- lm(CO2_AVG~MAP.std  *SamplingPt, data = both_funs_co2)
+summary(co2_gradient_season)  # yes varies by gradient and sampling point, no interaction. 
+
+co2_gradient_moist <- lm(CO2_AVG~MAP.std  *PercMoist.std, data = both_funs_co2)
+summary(co2_gradient_moist)  # yes varies by gradient but not sampling point, no interaction. 
+
+
+# make gene cats matrix - same as before but making sure in same order ....
+genecats_co2 <- both_funs_co2  %>% select (`Stress Tolerance`:`Vitamin Transport`) %>% as.matrix()
+dim (genecats_co2) # 55
+
+
+co2predict_MAP <- lm.rrpp(CO2_AVG~MAP.std +SamplingPt + PercMoist.std,  # R2  = 0.16
+                          data = both_funs_co2, print.progress = FALSE, SS.type = "III",
+                          turbo = FALSE, verbose = TRUE, iter = 9999)
+co2predict_genecats <- lm.rrpp(CO2_AVG~genecats_co2   , 
+                               data = both_funs_co2, print.progress = FALSE, SS.type = "III",
+                               turbo = FALSE, verbose = TRUE, iter = 9999) # R2 = 0.47
+
+co2predict_genecats_MAP <- lm.rrpp(CO2_AVG~genecats_co2 +MAP.std + SamplingPt+ PercMoist.std , 
+                                   data = both_funs_co2, print.progress = FALSE, SS.type = "III",
+                                   turbo = FALSE, verbose = TRUE, iter = 9999) #R2 = 0.57
+
+
+summary(co2predict_MAP) # p<0.001, R2 = 0.359 ( 40 w moist)
+summary(co2predict_genecats) # p=0.042, R2 = 0.525 . p value is significant.. NOT when no ssamplingpt
+summary(co2predict_genecats_MAP) # p=0.005, R2 = 0.626 (6335 with moist)
+
+
+anova(co2predict_MAP) #MAP and samplingpt sig (percmoist marg)
+anova(co2predict_genecats) # this IS NOT SIGNIFICANT when using type III :(
+anova(co2predict_genecats_MAP) # matrix not sig, but explains lots of variation... sad
+
+model.comparison(co2predict_MAP, co2predict_genecats, co2predict_genecats_MAP, type ="logLik")
+
+model.comparison(co2predict_MAP,  co2predict_genecats_MAP, type ="logLik")
+
+anova(co2predict_MAP,  co2predict_genecats_MAP)
+
+coef(co2predict_genecats, test = TRUE) #
+
+coef(co2predict_genecats_MAP, test = TRUE) #
+
+
+ggplot (both_funs_co2, aes (x = `Stress Tolerance`, y = CO2_AVG)) + 
+  geom_smooth(method = lm) + 
+  geom_point() 
+
+ggplot (both_funs_co2, aes (x = `Carboxylate Transport`, y = CO2_AVG)) + 
+  geom_smooth(method = lm) +
+  geom_point() 
+
+```
+# Functional data: Total enzyme activity
+```{r}
+########################################################################
+# stress and resource categories as predictors of ENZYMES!!!!!!
+########################################################################
+names(both_sum_fun_wide)
+dim(both_sum_fun_wide)
+both_funs_enz  <- merge (both_sum_fun_wide, enzymes, by = c( "Site", "SamplingPt"))
+dim(both_funs_enz)
+names(both_funs_enz)
+ # has one fewer than CO2 matrix because missing one sample
+
+
+# remove the row that had outliers for several enzymes
+both_funs_enz_noout <- both_funs_enz %>%  #enzymes_meta %>% 
+  filter(CBH < 2000)
+
+# make gene cats matrix 
+genecats_enz <- both_funs_enz_noout %>% select (`Stress Tolerance`:`Vitamin Transport`) %>% as.matrix()
+dim (genecats_enz) # 55
+
+
+hist(both_funs_enz_noout$CBH)  # transform?
+hist(both_funs_enz_noout$AG) # transform?
+hist(both_funs_enz_noout$BG) # transform?
+hist(both_funs_enz_noout$BX) # transform?
+
+hist(log(both_funs_enz_noout$CBH))  # better
+hist(log(both_funs_enz_noout$AG) )# better
+hist(log(both_funs_enz_noout$BG) )# better
+hist(log(both_funs_enz_noout$BX)) # better
+
+names(both_funs_enz_noout)
+
+both_funs_enz_noout$CBH_log <- log(both_funs_enz_noout$CBH) # always log enzyme assays
+both_funs_enz_noout$BG_log <- log(both_funs_enz_noout$BG)
+both_funs_enz_noout$AG_log <- log(both_funs_enz_noout$AG)
+both_funs_enz_noout$NAG_log <- log(both_funs_enz_noout$NAG)
+both_funs_enz_noout$BX_log <- log(both_funs_enz_noout$BX)
+both_funs_enz_noout$AP_log <- log(both_funs_enz_noout$AP)
+
+both_funs_enz_noout$total = log(
+  both_funs_enz_noout$CBH +
+    both_funs_enz_noout$BG+
+    both_funs_enz_noout$AG +
+    both_funs_enz_noout$NAG +
+    both_funs_enz_noout$BX  + # calculate total enzyme abundance - 
+    both_funs_enz_noout$AP  # measure of microbial investment in resource acquisiton
+)
+
+names(both_funs_enz_noout)
+
+# first off: does it vary across the gradient 
+enz_gradient_season <- lm(total~MAP.std +SamplingPt, both_funs_enz_noout)
+summary(enz_gradient_season) # marg sig effect of MAP, highly sig if take out interaction. 
+
+enz_gradient_moist <- lm(total~MAP.std *PercMoist.std, both_funs_enz_noout)
+summary(enz_gradient_moist) # MAP and Moist both sig, no interaction. 
+
+# connecting geme categoriess and function
+# with total enzyme abundance as response variable. 
+
+enz_predict_MAP <- lm.rrpp(total~MAP.std +  SamplingPt + PercMoist.std ,  # R2  = 0.23
+                           data = both_funs_enz_noout, print.progress = FALSE, SS.type = "III", # just MAP
+                           turbo = FALSE, verbose = TRUE, iter = 9999)
+enz_predict_genecats <- lm.rrpp(total~genecats_enz ,  # enzymes
+                                data = both_funs_enz_noout, print.progress = FALSE, SS.type = "III",
+                                turbo = FALSE, verbose = TRUE, iter = 9999) # R2 = 0.60
+enz_predict_genecats_MAP <- lm.rrpp(total~genecats_enz + MAP.std + SamplingPt + PercMoist.std, 
+                                    data = both_funs_enz_noout, print.progress = FALSE, SS.type = "III", # enz + MAP
+                                    turbo = FALSE, verbose = TRUE, iter = 9999) #R2 = 0.57
+
+
+summary(enz_predict_MAP) 
+summary(enz_predict_genecats) 
+summary(enz_predict_genecats_MAP) 
+
+anova(enz_predict_MAP, type = "III") 
+anova(enz_predict_genecats, type = "III") 
+anova(enz_predict_genecats_MAP, type = "III") 
+
+model.comparison( enz_predict_MAP,enz_predict_genecats, enz_predict_genecats_MAP, type = c( "logLik"))
+
+model.comparison(enz_predict_MAP,  enz_predict_genecats_MAP, type = "logLik")
+  
+anova(enz_predict_MAP,  enz_predict_genecats_MAP) 
+
+
+ggplot (both_funs_enz_noout, aes (x = `Stress Tolerance`, y = total)) + 
+  geom_point() 
+
+ggplot (both_funs_enz_noout, aes (x = `Desiccation/Osmotic/Salt Stress`, y = total)) + 
+  geom_point() # but this iss nothinig lmao
+
+ggplot (both_funs_enz_noout, aes (x = `N Compound Transport`, y = total)) +  
+  geom_point() 
+
+ggplot (both_funs_enz_noout, aes (x = `Carboxylate Transport`, y = total)) +  
+  geom_point() 
+
+ggplot (both_funs_enz_noout, aes (x = MAP, y = total)) + 
+  geom_point() + 
+  facet_grid (~SamplingPt)
+
+
+# with individual enzymes abundance as response variable.  - NOT PRESENTING !!!!!!!!!
+enz_all_predict_genecats <- lm.rrpp(as.matrix(both_funs_enz_noout[,34:39])
+                                    ~as.matrix(both_funs_enz_noout[,8:25])+SamplingPt , 
+                                    data = both_funs_enz_noout, print.progress = FALSE,
+                                    turbo = FALSE, verbose = TRUE) # R2 = 0.60
+
+enz_all_predict_MAP <- lm.rrpp(as.matrix(both_funs_enz_noout[,34:39])
+                               ~MAP.std +SamplingPt,  # R2  = 0.16
+                               data = both_funs_enz_noout, print.progress = FALSE,
+                               turbo = FALSE, verbose = TRUE)
+enz_all_predict_genecats_MAP <- lm.rrpp(as.matrix(both_funs_enz_noout[,34:39])
+                                        ~as.matrix(both_funs_enz_noout[,8:25])+MAP.std +SamplingPt, 
+                                        data = both_funs_enz_noout, print.progress = FALSE,
+                                        turbo = FALSE, verbose = TRUE) #R2 = 0.57
+summary(enz_all_predict_MAP)
+summary(enz_all_predict_genecats) 
+summary(enz_all_predict_genecats_MAP)
+
+anova(enz_all_predict_genecats) 
+
+anova(enz_all_predict_MAP,  enz_all_predict_genecats_MAP) 
+
+model.comparison(enz_all_predict_MAP, enz_all_predict_genecats, enz_all_predict_genecats_MAP, type = "logLik")
+
+model.comparison(enz_all_predict_MAP, enz_all_predict_genecats_MAP, type = "logLik")
+coef(enz_all_predict_genecats_MAP, test = TRUE) #
+
+
+########################################################################
+# stress and resource categories as predictors of MASS_SPECIFIC ENZYMES!!!!!!
+########################################################################
+ #NOT PRESENTING
+
+names(timedata)
+
+both_funs_enz_noout_MBC <- merge (both_funs_enz_noout, timedata, by = c( "Site", "SamplingPt"))
+
+both_funs_enz_noout_MBC$CBH_mbc <- (both_funs_enz_noout_MBC$CBH) / both_funs_enz_noout_MBC$MBC_mg_g
+both_funs_enz_noout_MBC$BG_mbc <- (both_funs_enz_noout_MBC$BG)/ both_funs_enz_noout_MBC$MBC_mg_g
+both_funs_enz_noout_MBC$AG_mbc <- (both_funs_enz_noout_MBC$AG)/ both_funs_enz_noout_MBC$MBC_mg_g
+both_funs_enz_noout_MBC$NAG_mbc <- (both_funs_enz_noout_MBC$NAG)/ both_funs_enz_noout_MBC$MBC_mg_g
+both_funs_enz_noout_MBC$BX_mbc <- (both_funs_enz_noout_MBC$BX)/ both_funs_enz_noout_MBC$MBC_mg_g
+both_funs_enz_noout_MBC$AP_mbc <- (both_funs_enz_noout_MBC$AP)/ both_funs_enz_noout_MBC$MBC_mg_g
+
+
+both_funs_enz_noout_MBC$CBH_log <- log(both_funs_enz_noout_MBC$CBH_mbc) # always log enzyme assays
+both_funs_enz_noout_MBC$BG_log <- log(both_funs_enz_noout_MBC$BG_mbc)
+both_funs_enz_noout_MBC$AG_log <- log(both_funs_enz_noout_MBC$AG_mbc)
+both_funs_enz_noout_MBC$NAG_log <- log(both_funs_enz_noout_MBC$NAG_mbc)
+both_funs_enz_noout_MBC$BX_log <- log(both_funs_enz_noout_MBC$BX_mbc)
+both_funs_enz_noout_MBC$AP_log <- log(both_funs_enz_noout_MBC$AP_mbc)
+
+both_funs_enz_noout_MBC$total_mbc = log(
+  both_funs_enz_noout_MBC$CBH_mbc +
+    both_funs_enz_noout_MBC$BG_mbc+
+    both_funs_enz_noout_MBC$AG_mbc +
+    both_funs_enz_noout_MBC$NAG_mbc +
+    both_funs_enz_noout_MBC$BX_mbc  + # calculate total enzyme abundance - 
+    both_funs_enz_noout_MBC$AP_mbc  # measure of microbial investment in resource acquisiton
+)
+
+summary(lm(total_mbc~MAP.std*PercMoist.std*SamplingPt, both_funs_enz_noout_MBC))
+
+
+# with total enzyme abundance as response variable. 
+enz_predict_genecats_mbc <- lm.rrpp(total_mbc~as.matrix(both_funs_enz_noout_MBC[,8:25]) +SamplingPt,  # enzymes
+                                data = both_funs_enz_noout_MBC, print.progress = FALSE,
+                                turbo = FALSE, verbose = TRUE, iter = 9999) # R2 = 0.60
+
+enz_predict_MAP_mbc <- lm.rrpp(total_mbc~MAP.std + SamplingPt,  # R2  = 0.16
+                           data = both_funs_enz_noout_MBC, print.progress = FALSE, # just MAP
+                           turbo = FALSE, verbose = TRUE, iter = 9999)
+enz_predict_genecats_MAP_mbc <- lm.rrpp(total_mbc~as.matrix(both_funs_enz_noout_MBC[,8:25]) + MAP.std + SamplingPt, 
+                                    data = both_funs_enz_noout_MBC, print.progress = FALSE, # enz + MAP
+                                    turbo = FALSE, verbose = TRUE, iter = 9999) #R2 = 0.57
+
+summary(enz_predict_MAP_mbc) 
+summary(enz_predict_genecats_mbc) 
+summary(enz_predict_genecats_MAP_mbc)
+
+anova(enz_predict_genecats_MAP_mbc) 
+
+model.comparison(enz_predict_MAP_mbc, enz_predict_genecats_mbc, enz_predict_genecats_MAP_mbc, type = c( "logLik"))
+
+
+anova(enz_predict_MAP_mbc,  enz_predict_genecats_MAP_mbc) 
+coef(enz_predict_genecats_MAP_mbc, test = TRUE) #
+
+names(both_funs_enz_noout_MBC)
+ggplot (both_funs_enz_noout_MBC, aes (x = `Ph Stress`, y = total_mbc)) + 
+  geom_point() + 
+  facet_grid (~SamplingPt) 
+
+ggplot (both_funs_enz_noout_MBC, aes (x = `Carbohydrate Transport`, y = total_mbc)) + 
+  geom_point() + 
+  facet_grid (~SamplingPt) 
+
+ggplot (both_funs_enz_noout_MBC, aes (x = MAP, y = total)) + 
+  geom_point() + 
+  facet_grid (~SamplingPt)
+```
+
+## Correlation stress and resource genes
+```{r}
+stressandres <- merge(resource_sum, stress_sum, by = c("sample","MAP", "SamplingPt","Site","PercMoist","MAP.std",      
+                                                       "PercMoist.std"  , "PercN.std", "pH.std" , "MBC.std", "DOC.std"))
+names(stressandres)
+stressandres <- stressandres  %>% 
+  dplyr::rename(   "resource_relabun" = "relabun.x",    "stress_relabun" = "relabun.y")
+names(stressandres)
+
+ggplot(stressandres, aes(x = resource_relabun, y = stress_relabun, color = MAP)) +
+  geom_point() + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  theme_classic() 
+
+stress_vs_resource <- ggplot(stressandres, aes(x = resource_relabun, y = stress_relabun, color = MAP)) +
+  geom_point() + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  theme_classic(base_size = 14) + 
+  facet_wrap(~SamplingPt)
+
+
+stress_vs_resource 
+
+summary(lm(resource_relabun~stress_relabun, data = stressandres)) 
+summary(lm(resource_relabun~stress_relabun*SamplingPt, data = stressandres)) 
+
+cor.test(stressandres$stress_relabun, stressandres$resource_relabun) 
+
+# correlation by group
+library(rstatix) 
+stressandres %>% 
+  group_by ( SamplingPt) %>% 
+  cor_test(stress_relabun, resource_relabun, method = "pearson") # nay lady
+citation("rstatix") 
+```
+
+## NMDSs and permanovas - OVERALL: Composition of functional genes
+```{r}
+sitexsp_bray = vegdist(sitexsp, method = "bray")
+
+set.seed(42) 
+permanova_all_season <- adonis2(sitexsp_bray~ sitexsp_wmeta$MAP.std*  sitexsp_wmeta$SamplingPt , iter = 9999)
+permanova_all_season # map 
+
+set.seed(42) 
+permanova_all_moist <- adonis2(sitexsp_bray~ sitexsp_wmeta$MAP.std* sitexsp_wmeta$PercMoist.std , iter = 9999 )
+permanova_all_moist # MAP 
+
+# check dispersion! separately for each 
+betadisper_all_MAP <- betadisper(sitexsp_bray, group=sitexsp_wmeta$MAP.std)
+permutest(betadisper_all_MAP) # nope
+plot(betadisper_all_MAP)
+betadisper_all_moist <- betadisper(sitexsp_bray, group=sitexsp_wmeta$PercMoist.std)
+permutest(betadisper_all_moist) # all unique valuess :/ does not work
+betadisper_all_season <- betadisper(sitexsp_bray, group=sitexsp_wmeta$SamplingPt)
+permutest(betadisper_all_season) # Marginal....
+
+
+nmds_all <- metaMDS(sitexsp, distance="bray",  trymax= 500 )
+nmds_all$stress # 0.1511551
+ggplot_nmds <- as.data.frame(nmds_all[["points"]])
+ggplot_nmds$MAP = sitexsp_wmeta$MAP
+ggplot_nmds$PercMoist = sitexsp_wmeta$PercMoist
+ggplot_nmds$SamplingPt = sitexsp_wmeta$SamplingPt
+
+
+nmds <- ggplot(ggplot_nmds, aes(x = MDS1, y = MDS2)) +  
+  geom_point(aes (color =  MAP, shape = SamplingPt), size = 3, alpha= 0.7) + 
+  #scale_color_gradientn(colours = mycol) + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  theme_classic(base_size = 16)     
+nmds
+
+#svglite("Figure 2a.svg" , width = 5.5, height = 4)
+#nmds
+#dev.off()
+
+nmds_moist <- ggplot(ggplot_nmds, aes(x = MDS1, y = MDS2)) +  # do not need treatament in here :()) +
+  geom_point(aes (color =  PercMoist, shape = SamplingPt), size = 3, alpha= 0.7) + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  theme_classic(base_size = 16)     
+nmds_moist
+```
+
+### NMDSs and permanovas - Functional categories: Composition of functional genes
+```{r}
+categories_matrix_bray <- vegdist(categories_matrix, method = "bray")
+
+
+set.seed(42)
+permanova_funcats_season<- adonis2(categories_matrix_bray~MAP.std*SamplingPt,  
+                            data = both_sum_fun_wide, iter = 9999) # yes MAP matters. 
+permanova_funcats_season # MAP
+
+set.seed(42)
+permanova_funcats_moist<- adonis2(categories_matrix_bray~MAP.std*PercMoist.std,  
+                                   data = both_sum_fun_wide, iter = 9999) # yes MAP matters. 
+permanova_funcats_moist # MAP*Moissst..... 
+
+set.seed(42)
+nmds_funcats <- metaMDS(as.matrix(both_funs_co2[,8:25]), distance="bray",  trymax= 500 )
+nmds_funcats
+```
+
+### NMDSs and permanovas - Stress: Composition of stress genes
+```{r}
+stress_sel <- stress %>% select(c(KO, sample, counts, MAP.std, MAP, PercMoist.std, PercMoist, Site, Year, SamplingPt))
+stress_sitexsp_wmeta <- stress_sel  %>%  pivot_wider(names_from = KO, values_from = counts , values_fill = 0)
+dim(stress_sitexsp_wmeta)
+dim (stress_sitexsp_wmeta[,9:71])
+stress_sitexsp_wmeta[,71]
+stress_sitexsp_wmeta[,1:10] 
+
+sitesp_stress_bray <- vegdist (stress_sitexsp_wmeta[,9:71], method = "bray")
+
+betadisper.stress.map <- betadisper(sitesp_stress_bray, group= stress_sitexsp_wmeta$MAP )
+permutest(betadisper.stress.map) # nope
+betadisper.stress.map$group.distances
+stress.disp <- as.data.frame (as.matrix (betadisper.stress.map$group.distances, row.names = NULL))
+stress.disp <- rownames_to_column(stress.disp)
+names(stress.disp) <- c ("MAP","DistFromMedian")
+stress.disp$MAP.cont <- as.numeric(stress.disp$MAP)
+summary(lm(DistFromMedian~MAP.cont, data=stress.disp)) # not sig. 
+ggplot (stress.disp, aes(x = MAP, y = DistFromMedian)) + 
+  geom_point() +
+  expand_limits(x = 0, y = 0) # this is to look at if there is a trend 
+
+set.seed(42)
+permanova.stress.season <- adonis2(sitesp_stress_bray~ stress_sitexsp_wmeta$MAP.std *stress_sitexsp_wmeta$SamplingPt,
+                                   iter = 9999)
+permanova.stress.season # marg MAP
+
+set.seed(42)
+permanova.stress.moist <- adonis2(sitesp_stress_bray~ stress_sitexsp_wmeta$MAP.std *stress_sitexsp_wmeta$PercMoist.std,
+                                  iter = 9999)
+permanova.stress.moist # also marg MAP
+
+nmds_stress <- metaMDS(sitesp_stress_bray , trymax = 1000)
+
+ggplot_nmds_stress <- as.data.frame(nmds_stress[["points"]])
+ggplot_nmds_stress$MAP = stress_sitexsp_wmeta$MAP
+ggplot_nmds_stress$SamplingPt = stress_sitexsp_wmeta$SamplingPt
+
+nmds_stress <- ggplot(ggplot_nmds_stress, aes(x = MDS1, y = MDS2)) +  # do not need treatament in here :()) +
+  geom_point(aes (color =  MAP, shape = SamplingPt), size = 3, alpha = 0.7) + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  theme_classic(base_size = 16)     
+nmds_stress
+
+#svglite("Figure 2c.svg" , width = 5.5, height = 4)
+#nmds_stress
+#dev.off()
+```
+
+### NMDSs and permanovas - Resource: Composition of stress genes
+```{r}
+resource_sel <- resource %>% select(c(KO, sample, counts, MAP,MAP.std, PercMoist, PercMoist.std, Site, Year, SamplingPt))
+resource_sitexsp_wmeta <- resource_sel  %>%  pivot_wider(names_from = KO, values_from = counts , values_fill = 0)
+dim(resource_sitexsp_wmeta)
+resource_sitexsp_wmeta[,324]
+resource_sitexsp_wmeta[,1:10] 
+dim (resource_sitexsp_wmeta[,9:324])
+
+sitesp_resource_bray <- vegdist ( resource_sitexsp_wmeta[,9:324], method = "bray")
+
+# check dispersion
+
+betadisper.resource.season <- betadisper(sitesp_resource_bray , group= resource_sitexsp_wmeta$MAP)
+betadisper.resource.season 
+permutest(betadisper.resource.season) # nope
+                                     
+set.seed(42)
+permanova.resource.season <- adonis2(sitesp_resource_bray~ resource_sitexsp_wmeta$MAP.std*resource_sitexsp_wmeta$SamplingPt,
+                                     iter = 9999)
+permanova.resource.season # MAP (marg)
+
+set.seed(42)
+permanova.resource.moist <- adonis2(sitesp_resource_bray~ resource_sitexsp_wmeta$MAP.std*resource_sitexsp_wmeta$PercMoist.std, 
+                                    iter = 9999)
+permanova.resource.moist # map (marg)
+
+set.seed(42)
+nmds_resource <- metaMDS(sitesp_resource_bray , trymax = 500)
+nmds_resource$stress # 0.1379149
+ggplot_nmds_resource <- as.data.frame(nmds_resource[["points"]])
+ggplot_nmds_resource$MAP = resource_sitexsp_wmeta$MAP
+ggplot_nmds_resource$SamplingPt = resource_sitexsp_wmeta$SamplingPt
+
+nmds_resource <- ggplot(ggplot_nmds_resource, aes(x = MDS1, y = MDS2)) +  # do not need treatament in here :()) +
+  geom_point(aes (color =  MAP, shape = SamplingPt), size = 3, alpha=0.7) + 
+  paletteer::scale_colour_paletteer_c("grDevices::Zissou 1", direction = -1) + 
+  theme_classic(base_size = 16)     
+nmds_resource
+
+#svglite("Figure 2b.svg" , width = 5.5 , height = 4)
+#nmds_resource
+#dev.off()
+```
+
